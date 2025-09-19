@@ -1,21 +1,11 @@
-# =========================================================================================
-# Security Framework Gates — полный рабочий пайплайн
-# Маркеры в логах:
-#   C1..C10 — номер критерия из твоего фреймворка
-#   М1 = ⬜ (белый квадрат), M2 = ⚪ (белый круг)
-#   Уровни: 🟩 L1, 🟦 L2, 🟪 L3 (цвет подставит логгер)
-# Пример строки лога-доказательства:
-#   C1 ⬜ M1 L1 | ART.M1.SIGN  — Подписываем артефакт … [evidence...]
-# =========================================================================================
-
 name: Security Framework Gates
 
 on:
   push:
-    branches: ['**']          # любые ветки (для KMS — блок на default branch через ENFORCEMENT)
+    branches: [ "main", "release/*"]
   pull_request:
-    branches: ['**']
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [ "main", "release/*" ]
+    types: [ opened, synchronize, reopened, ready_for_review ]
   workflow_dispatch:
 
 permissions:
@@ -28,101 +18,33 @@ permissions:
 env:
   # block на default branch, warn на остальных
   ENFORCEMENT: ${{ github.ref_name == github.event.repository.default_branch && 'block' || 'warn' }}
+  # Аттестируем на push / workflow_dispatch / PR из этой же репы (НЕ из форков)
+  CAN_ATTEST: ${{ (github.event_name == 'push') || (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
 
 jobs:
-
-  # ========================= C9 — SAST / SCA presence =========================
+  # ---------------- CodeQL + Dep Review ----------------
   codeql:
     runs-on: ubuntu-latest
     steps:
-      # Setup audit logger (per job)
-      - name: Setup audit logger (per job)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/audit_log" <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          LEVEL="$1"; STATUS="$2"; CODE="$3"; TITLE="$4"; EVID="${5:-}"; EXTRA="${6:-}"
-          case "$LEVEL" in L1) ICON="🟩";; L2) ICON="🟦";; L3) ICON="🟪";; *) ICON="▫️";; esac
-          echo "::group::${ICON} ${CODE}"
-          printf "%s [%s] %s — %s\n" "$ICON" "$STATUS" "$CODE" "$TITLE"
-          [ -n "$EVID" ] && { echo "EVIDENCE:"; printf "%s\n" "$EVID"; }
-          [ -n "$EXTRA" ] && { echo "NOTE: $EXTRA"; }
-          echo "::endgroup::"
-          printf '{"level":"%s","status":"%s","code":"%s","title":"%s"}\n' "$LEVEL" "$STATUS" "$CODE" "$TITLE" >> "${AUDIT_PART}"
-          EOS
-          chmod +x "$HOME/bin/audit_log"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          export AUDIT_PART="${RUNNER_TEMP}/audit-${GITHUB_JOB}.json"
-          echo "AUDIT_PART=$AUDIT_PART" >> "$GITHUB_ENV"
-          : > "$AUDIT_PART"
-
-      - name: Checkout
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
-
-      # C9 ⬜ M1 L1 — SAST ran (CodeQL)
-      - name: CodeQL init
-        uses: github/codeql-action/init@192325c86100d080feab897ff886c34abd4c83a3
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: github/codeql-action/init@192325c86100d080feab897ff886c34abd4c83a3
         with:
           languages: python, actions
           build-mode: none
-
-      - name: CodeQL analyze
-        id: cql
-        uses: github/codeql-action/analyze@192325c86100d080feab897ff886c34abd4c83a3
-
-      - name: Log C9 ⬜ M1 L1 | SAST ran
-        if: always()
-        shell: bash
-        run: |
-          audit_log L1 $([ "${{ steps.cql.outcome }}" = "success" ] && echo PASSED || echo WARN) \
-            "C9 ⬜ M1 L1 | TEST.M1.SAST" \
-            "Запущен CodeQL (SAST). SARIF в Security табе." \
-            "доп. доказательства: скрин настроек — Actions → Workflow permissions"
-
-      - name: Upload audit part
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: audit-${{ github.job }}
-          path: ${{ env.AUDIT_PART }}
+      - uses: github/codeql-action/analyze@192325c86100d080feab897ff886c34abd4c83a3
 
   dependency_review:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup audit logger (per job)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/audit_log" <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          LEVEL="$1"; STATUS="$2"; CODE="$3"; TITLE="$4"; EVID="${5:-}"; EXTRA="${6:-}"
-          case "$LEVEL" in L1) ICON="🟩";; L2) ICON="🟦";; L3) ICON="🟪";; *) ICON="▫️";; esac
-          echo "::group::${ICON} ${CODE}"
-          printf "%s [%s] %s — %s\n" "$ICON" "$STATUS" "$CODE" "$TITLE"
-          [ -n "$EVID" ] && { echo "EVIDENCE:"; printf "%s\n" "$EVID"; }
-          [ -n "$EXTRA" ] && { echo "NOTE: $EXTRA"; }
-          echo "::endgroup::"
-          printf '{"level":"%s","status":"%s","code":"%s","title":"%s"}\n' "$LEVEL" "$STATUS" "$CODE" "$TITLE" >> "${AUDIT_PART}"
-          EOS
-          chmod +x "$HOME/bin/audit_log"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          export AUDIT_PART="${RUNNER_TEMP}/audit-${GITHUB_JOB}.json"
-          echo "AUDIT_PART=$AUDIT_PART" >> "$GITHUB_ENV"
-          : > "$AUDIT_PART"
-
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
 
-      - name: Compute base/head refs
+      - name: Compute base/head refs for dependency review
         id: deprefs
         shell: bash
         run: |
           set -euo pipefail
           HEAD_SHA="${GITHUB_SHA}"
+          BASE_SHA=""
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             BEFORE="$(jq -r .before "$GITHUB_EVENT_PATH")"
             if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
@@ -136,74 +58,32 @@ jobs:
           fi
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
           echo "head=$HEAD_SHA" >> "$GITHUB_OUTPUT"
-          echo "skip=$([ -z "$BASE_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
-      # C9 ⬜ M1 L1 — SCA presence (Dep Review)
-      - name: Dependency review
+          if [ -z "$BASE_SHA" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::No base SHA found (first commit). Skipping dependency review."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Using base=$BASE_SHA head=$HEAD_SHA"
+      - uses: actions/dependency-review-action@595b5aeba73380359d98a5e087f648dbb0edce1b
         if: steps.deprefs.outputs.skip != 'true'
-        id: dep
-        uses: actions/dependency-review-action@595b5aeba73380359d98a5e087f648dbb0edce1b
         with:
           base-ref: ${{ steps.deprefs.outputs.base }}
           head-ref: ${{ steps.deprefs.outputs.head }}
           fail-on-severity: critical
         continue-on-error: ${{ env.ENFORCEMENT != 'block' }}
 
-      - name: Log C9 ⬜ M1 L1 | SCA presence
-        if: always()
-        shell: bash
-        run: |
-          outcome="${{ steps.dep.outcome || 'skipped' }}"
-          status=$([ "$outcome" = "success" ] && echo PASSED || ( [ "$outcome" = "skipped" ] && echo WARN || echo WARN ))
-          audit_log L1 "$status" "C9 ⬜ M1 L1 | TEST.M1.SCA" \
-            "Dependency Review выполнен (fail-on=critical)." \
-            "доп. доказательства: вкладка Security → Dependency review"
-
-      - name: Upload audit part
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: audit-${{ github.job }}
-          path: ${{ env.AUDIT_PART }}
-
-  # ========================= C8 — Third-party publishers =========================
+  # --------------- Verify action publishers ---------------
   verify_action_publishers:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup audit logger (per job)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/audit_log" <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          LEVEL="$1"; STATUS="$2"; CODE="$3"; TITLE="$4"; EVID="${5:-}"; EXTRA="${6:-}"
-          case "$LEVEL" in L1) ICON="🟩";; L2) ICON="🟦";; L3) ICON="🟪";; *) ICON="▫️";; esac
-          echo "::group::${ICON} ${CODE}"
-          printf "%s [%s] %s — %s\n" "$ICON" "$STATUS" "$CODE" "$TITLE"
-          [ -n "$EVID" ] && { echo "EVIDENCE:"; printf "%s\n" "$EVID"; }
-          [ -n "$EXTRA" ] && { echo "NOTE: $EXTRA"; }
-          echo "::endgroup::"
-          printf '{"level":"%s","status":"%s","code":"%s","title":"%s"}\n' "$LEVEL" "$STATUS" "$CODE" "$TITLE" >> "${AUDIT_PART}"
-          EOS
-          chmod +x "$HOME/bin/audit_log"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          export AUDIT_PART="${RUNNER_TEMP}/audit-${GITHUB_JOB}.json"
-          echo "AUDIT_PART=$AUDIT_PART" >> "$GITHUB_ENV"
-          : > "$AUDIT_PART"
-
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
-
       - name: Install yq
-        shell: bash
         run: |
+          set -euo pipefail
           sudo curl -sSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
-
-      # C8 ⬜ M1 L1 — allow-list + pinned full SHA
-      - name: Verify action publishers (WARN outside default branch)
-        id: vpub
+      - name: Verify action publishers (WARN)
         env:
           GH_TOKEN: ${{ github.token }}
           ALLOW_OWNERS: actions,github,dependabot,aws-actions,google-github-actions,azure
@@ -218,71 +98,42 @@ jobs:
           for f in "${FILES[@]}"; do
             while read -r owner repo ref; do
               [ -z "$owner" ] && continue
-              if ! is_allowed "$owner"; then echo "::warning file=$f::Owner '$owner' не в allow-list (${ALLOW_OWNERS})"; status=1; fi
-              if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then echo "::warning file=$f::'$owner/$repo@$ref' не закреплён на полный commit SHA"; status=1; fi
+              if ! is_allowed "$owner"; then
+                echo "::warning file=$f::Owner '$owner' не в allow-list (${ALLOW_OWNERS})"
+                status=1
+              fi
+              if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::warning file=$f::'$owner/$repo@$ref' не закреплён на полный commit SHA"
+                status=1
+              fi
+              data=$(gh api "repos/$owner/$repo" -H "Accept: application/vnd.github+json" || true)
+              verified=$(jq -r 'try .owner.is_verified // false' <<<"$data")
+              if [ "$verified" != "true" ] && ! is_allowed "$owner"; then
+                echo "::warning file=$f::Издатель '$owner' не verified"
+                status=1
+              fi
             done < <(yq -r '.. | .uses? | select(type=="string")' "$f" | awk -F'[@/]' '{ if (NF>=3) printf "%s %s %s\n",$1,$2,$NF }')
           done
           if [ $status -ne 0 ] && [ "${ENFORCEMENT}" = "block" ]; then
-            echo "::error::Проверка издателей/пиннинга не прошла (ENFORCEMENT=block)."; exit 1
+            echo "::error::Проверка издателей/пиннинга не прошла (ENFORCEMENT=block)."
+            exit 1
           fi
 
-      - name: Log C8 ⬜ M1 L1 | Third-party allow-list & pin
-        if: always()
-        shell: bash
-        run: |
-          st="${{ steps.vpub.outcome }}"
-          audit_log L1 $([ "$st" = "success" ] && echo PASSED || echo WARN) \
-            "C8 ⬜ M1 L1 | TP.M1.ALLOW+PIN" \
-            "Workflow actions из allow-list, pinned to full SHA." \
-            "доп. доказательства: скрин настроек — Org/Repo Policies (Allow-list, Require pin to SHA)"
-
-      - name: Upload audit part
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: audit-${{ github.job }}
-          path: ${{ env.AUDIT_PART }}
-
-  # ========================= C1 — Артефакты: подпись/attest =========================
+  # ---------------- Build + SBOM + Attest ----------------
   build_and_attest:
-    needs: [codeql, dependency_review, verify_action_publishers]
+    needs: [ codeql, dependency_review, verify_action_publishers ]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Setup audit logger (per job)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/audit_log" <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          LEVEL="$1"; STATUS="$2"; CODE="$3"; TITLE="$4"; EVID="${5:-}"; EXTRA="${6:-}"
-          case "$LEVEL" in L1) ICON="🟩";; L2) ICON="🟦";; L3) ICON="🟪";; *) ICON="▫️";; esac
-          echo "::group::${ICON} ${CODE}"
-          printf "%s [%s] %s — %s\n" "$ICON" "$STATUS" "$CODE" "$TITLE"
-          [ -n "$EVID" ] && { echo "EVIDENCE:"; printf "%s\n" "$EVID"; }
-          [ -n "$EXTRA" ] && { echo "NOTE: $EXTRA"; }
-          echo "::endgroup::"
-          printf '{"level":"%s","status":"%s","code":"%s","title":"%s"}\n' "$LEVEL" "$STATUS" "$CODE" "$TITLE" >> "${AUDIT_PART}"
-          EOS
-          chmod +x "$HOME/bin/audit_log"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          export AUDIT_PART="${RUNNER_TEMP}/audit-${GITHUB_JOB}.json"
-          echo "AUDIT_PART=$AUDIT_PART" >> "$GITHUB_ENV"
-          : > "$AUDIT_PART"
-
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
 
       - name: Build artifact
-        shell: bash
         run: |
           echo "hello $(date -u +%FT%TZ)" > artifact.txt
           sha256sum artifact.txt | tee checksums.txt
 
-      # C2 ⚪ M2 L2 — SBOM generate & attach (предпосылка)
-      - name: Export SBOM (Syft) for artifact.txt
+      - name: Export SBOM for artifact.txt (Syft)
         id: sbom
         shell: bash
         run: |
@@ -292,15 +143,22 @@ jobs:
           URL1="https://github.com/anchore/syft/releases/download/${VER}/syft_${VER#v}_linux_amd64.tar.gz"
           URL2="https://github.com/anchore/syft/releases/download/${VER}/syft_Linux_x86_64.tar.gz"
           curl -fsSL "$URL1" -o syft.tgz || curl -fsSL "$URL2" -o syft.tgz
-          tar -xzf syft.tgz syft && sudo install -m0755 syft /usr/local/bin/syft
+          tar -xzf syft.tgz syft
+          sudo install -m 0755 syft /usr/local/bin/syft
+          syft version
           syft "file:artifact.txt" -o spdx-json=sbom.spdx.json
           tmp=$(mktemp)
           jq --arg d "$ART_DIGEST" '
-            .files = ((.files // []) | map(select(.fileName != "artifact.txt"))
-              + [{ "fileName":"artifact.txt","SPDXID":"SPDXRef-File-artifact.txt",
-                   "checksums":[{"algorithm":"SHA256","checksumValue":$d}] }])
+            .files = (
+              ((.files // []) | map(select(.fileName != "artifact.txt")))
+              +
+              [ { "fileName":"artifact.txt",
+                  "SPDXID":"SPDXRef-File-artifact.txt",
+                  "checksums":[{"algorithm":"SHA256","checksumValue":$d}] } ]
+            )
           ' sbom.spdx.json > "$tmp"
           mv "$tmp" sbom.spdx.json
+          jq -e '.files[] | select(.fileName=="artifact.txt") | .checksums[] | select(.algorithm=="SHA256")' sbom.spdx.json >/dev/null
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -311,198 +169,69 @@ jobs:
             checksums.txt
             sbom.spdx.json
 
-      # C1 ⬜ M1 L1 — Подписываем артефакт (provenance attestation)
-      - name: Attest provenance (always try)
-        id: prov
+      - name: Attest provenance
+        if: env.CAN_ATTEST == 'true'
         uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018
         with:
           subject-path: artifact.txt
-        continue-on-error: ${{ env.ENFORCEMENT != 'block' && github.event_name != 'push' }}
 
-      - name: Log C1 ⬜ M1 L1 | SIGN
-        if: always()
-        shell: bash
-        run: |
-          audit_log L1 $([ "${{ steps.prov.outcome }}" = "success" ] && echo PASSED || echo WARN) \
-            "C1 ⬜ M1 L1 | ART.M1.SIGN" \
-            "Создана attestation (provenance) для artifact.txt." \
-            "доп. доказательства: скрин — Actions → Attestations (artifact.txt)"
-
-      # C2 ⚪ M2 L2 — SBOM attested
-      - name: Attest SBOM (always try)
-        id: sab
+      - name: Attest SBOM
+        if: env.CAN_ATTEST == 'true'
         uses: actions/attest-sbom@5026d3663739160db546203eeaffa6aa1c51a4d6
         with:
           subject-path: artifact.txt
           sbom-path: sbom.spdx.json
-        continue-on-error: ${{ env.ENFORCEMENT != 'block' && github.event_name != 'push' }}
 
-      - name: Log C2 ⚪ M2 L2 | SBOM-ATTEST
-        if: always()
-        shell: bash
-        run: |
-          audit_log L2 $([ "${{ steps.sab.outcome }}" = "success" ] && echo PASSED || echo WARN) \
-            "C2 ⚪ M2 L2 | DEPS.M2.SBOM-ATTEST" \
-            "SBOM attested (sbom.spdx.json привязан к artifact.txt)." \
-            "доп. доказательства: скрин — Actions → Attestations (SBOM)"
-
-      # C1 ⬜ M1 L1 — Verify attestations (auto)
-      - name: Verify attestations
-        id: vatt
-        shell: bash
+      - name: Ensure gh has attestation command
+        if: env.CAN_ATTEST == 'true'
+        env:
+          GH_TOKEN: ${{ env.GH_TOKEN }}
         run: |
           set -euo pipefail
-          WF_NOREF="${GITHUB_WORKFLOW_REF%@*}"
-          ok=1
-          for i in $(seq 1 6); do
-            if gh attestation verify artifact.txt \
-                 --repo "${{ github.repository }}" \
-                 --predicate-type "https://slsa.dev/provenance/v1" \
-                 --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
-                 --signer-workflow "$WF_NOREF" \
-                 --deny-self-hosted-runners \
-                 --limit 50 ; then ok=0; break; fi
-            sleep 5
+          if ! gh attestation --help >/dev/null 2>&1; then
+            gh extension install github/gh-attestation
+          fi
+          gh --version
+
+      - name: Verify attestations (SLSA + SBOM)
+        if: env.CAN_ATTEST == 'true'
+        env:
+          GH_TOKEN: ${{ env.GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          WF_REF="${GITHUB_WORKFLOW_REF}" # полный ref с @refs/...
+          echo "Verifying signer-workflow=${WF_REF}"
+          for predicate in "https://slsa.dev/provenance/v1" "https://spdx.dev/Document"; do
+            echo "Trying predicate: ${predicate}"
+            ok=0
+            for i in $(seq 1 8); do
+              if gh attestation verify artifact.txt \
+                    --repo "${{ github.repository }}" \
+                    --predicate-type "${predicate}" \
+                    --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+                    --signer-workflow "${WF_REF}" \
+                    --deny-self-hosted-runners \
+                    --limit 50 ; then
+                echo "✓ Verified ${predicate}"
+                ok=1
+                break
+              fi
+              sleep 10
+            done
+            if [ $ok -eq 0 ]; then
+              echo "::warning::Verification failed for ${predicate}"
+              [ "${ENFORCEMENT}" = "block" ] && exit 1 || true
+            fi
           done
-          [ $ok -eq 0 ] || { echo "::warning::Attestation verification not strict-ok"; [ "${ENFORCEMENT}" = "block" ] && exit 1 || true; }
 
-      - name: Log C1 ⬜ M1 L1 | VERIFY
-        if: always()
-        shell: bash
-        run: |
-          audit_log L1 $([ "${{ steps.vatt.outcome }}" = "success" ] && echo PASSED || echo WARN) \
-            "C1 ⬜ M1 L1 | ART.M1.VERIFY" \
-            "gh attestation verify → успешная верификация (или WARN вне default branch)." \
-            "доп. доказательства: вывод шага Verify attestations"
-
-      - name: Upload audit part
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: audit-${{ github.job }}
-          path: ${{ env.AUDIT_PART }}
-
-  # ========================= C1 — KMS подпись (L2) =========================
-  kms_sign_and_verify:
-    needs: [build_and_attest, trust_store_guard]
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Setup audit logger (per job)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/audit_log" <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          LEVEL="$1"; STATUS="$2"; CODE="$3"; TITLE="$4"; EVID="${5:-}"; EXTRA="${6:-}"
-          case "$LEVEL" in L1) ICON="🟩";; L2) ICON="🟦";; L3) ICON="🟪";; *) ICON="▫️";; esac
-          echo "::group::${ICON} ${CODE}"
-          printf "%s [%s] %s — %s\n" "$ICON" "$STATUS" "$CODE" "$TITLE"
-          [ -n "$EVID" ] && { echo "EVIDENCE:"; printf "%s\n" "$EVID"; }
-          [ -n "$EXTRA" ] && { echo "NOTE: $EXTRA"; }
-          echo "::endgroup::"
-          printf '{"level":"%s","status":"%s","code":"%s","title":"%s"}\n' "$LEVEL" "$STATUS" "$CODE" "$TITLE" >> "${AUDIT_PART}"
-          EOS
-          chmod +x "$HOME/bin/audit_log"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          export AUDIT_PART="${RUNNER_TEMP}/audit-${GITHUB_JOB}.json"
-          echo "AUDIT_PART=$AUDIT_PART" >> "$GITHUB_ENV"
-          : > "$AUDIT_PART"
-
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: build
-
-      # Настройка AWS (OIDC). На PR из fork секретов нет → WARN; на main → BLOCK при сбое.
-      - name: Configure AWS (OIDC)
-        id: awscfg
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-        continue-on-error: ${{ env.ENFORCEMENT != 'block' }}
-
-      # C1 ⬜ M1 L2 — подпись KMS (PS256) + verify OpenSSL
-      - name: KMS Sign artifact.txt (PS256)
-        id: kms1
-        shell: bash
-        run: |
-          set -euo pipefail
-          aws kms sign \
-            --key-id "${{ vars.AWS_KMS_KEY_ID }}" \
-            --signing-algorithm RSASSA_PSS_SHA_256 \
-            --message-type RAW \
-            --message fileb://artifact.txt \
-            --query Signature --output text | base64 -d > artifact.sig
-
-      - name: Fetch public key and verify (OpenSSL PSS)
-        id: kms2
-        shell: bash
-        run: |
-          set -euo pipefail
-          aws kms get-public-key --key-id "${{ vars.AWS_KMS_KEY_ID }}" --query PublicKey --output text | base64 -d > aws-pub.der
-          openssl pkey -pubin -inform DER -in aws-pub.der -out aws-pub.pem
-          openssl dgst -sha256 -verify aws-pub.pem -signature artifact.sig \
-            -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:digest -sigopt rsa_mgf1_md:sha256 artifact.txt
-
-      - name: Log C1 ⬜ M1 L2 | KMS-SIGN
-        if: always()
-        shell: bash
-        run: |
-          st1="${{ steps.kms1.outcome || 'failure' }}"; st2="${{ steps.kms2.outcome || 'failure' }}"
-          status=$([ "$st1" = "success" ] && [ "$st2" = "success" ] && echo PASSED || ( [ "${ENFORCEMENT}" = "block" ] && echo FAILED || echo WARN ))
-          SIG_HEX=$(xxd -p -c 256 artifact.sig 2>/dev/null | head -c 64 || true)
-          audit_log L2 "$status" "C1 ⬜ M1 L2 | ART.M1.KMS-SIGN" \
-            "aws kms sign RSASSA_PSS_SHA_256 + verify (OpenSSL)." \
-            "signature(first32B)=${SIG_HEX}; доп. доказательства: скрин — AWS KMS key policy"
-
-      - name: Upload audit part
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: audit-${{ github.job }}
-          path: ${{ env.AUDIT_PART }}
-
-  # ========================= C1 — Trust-store / JWKS =========================
+  # ---------------- Trust-store (JWKS) ----------------
   trust_store_guard:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup audit logger (per job)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/audit_log" <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          LEVEL="$1"; STATUS="$2"; CODE="$3"; TITLE="$4"; EVID="${5:-}"; EXTRA="${6:-}"
-          case "$LEVEL" in L1) ICON="🟩";; L2) ICON="🟦";; L3) ICON="🟪";; *) ICON="▫️";; esac
-          echo "::group::${ICON} ${CODE}"
-          printf "%s [%s] %s — %s\n" "$ICON" "$STATUS" "$CODE" "$TITLE"
-          [ -n "$EVID" ] && { echo "EVIDENCE:"; printf "%s\n" "$EVID"; }
-          [ -n "$EXTRA" ] && { echo "NOTE: $EXTRA"; }
-          echo "::endgroup::"
-          printf '{"level":"%s","status":"%s","code":"%s","title":"%s"}\n' "$LEVEL" "$STATUS" "$CODE" "$TITLE" >> "${AUDIT_PART}"
-          EOS
-          chmod +x "$HOME/bin/audit_log"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          export AUDIT_PART="${RUNNER_TEMP}/audit-${GITHUB_JOB}.json"
-          echo "AUDIT_PART=$AUDIT_PART" >> "$GITHUB_ENV"
-          : > "$AUDIT_PART"
-
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
-
-      # C1 ⬜ M1 L1 — trust-store присутствует и kid совпадает
       - name: Validate JWKS exists and matches AWS_KMS_KEY_ID
-        id: jwks
         env:
           AWS_KMS_KEY_ID: ${{ vars.AWS_KMS_KEY_ID }}
-        shell: bash
         run: |
           set -euo pipefail
           test -f .github/trust/publishers.jwks.json || { echo "JWKS missing"; exit 1; }
@@ -515,203 +244,173 @@ jobs:
             fi
           fi
 
-      - name: Log C1 ⬜ M1 L1 | TRUST-STORE
-        if: always()
-        shell: bash
-        run: |
-          audit_log L1 $([ "${{ steps.jwks.outcome }}" = "success" ] && echo PASSED || echo WARN) \
-            "C1 ⬜ M1 L1 | ART.M1.TRUST-STORE" \
-            "JWKS присутствует; сверка kid с AWS_KMS_KEY_ID." \
-            "доп. доказательства: скрин — .github/trust/publishers.jwks.json (обезличенный)"
-
-      - name: Upload audit part
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: audit-${{ github.job }}
-          path: ${{ env.AUDIT_PART }}
-
-  # ========================= C2 — SBOM digest enforce (L2) =========================
-  sbom_enforce:
-    needs: [build_and_attest]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup audit logger (per job)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/audit_log" <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          LEVEL="$1"; STATUS="$2"; CODE="$3"; TITLE="$4"; EVID="${5:-}"; EXTRA="${6:-}"
-          case "$LEVEL" in L1) ICON="🟩";; L2) ICON="🟦";; L3) ICON="🟪";; *) ICON="▫️";; esac
-          echo "::group::${ICON} ${CODE}"
-          printf "%s [%s] %s — %s\n" "$ICON" "$STATUS" "$CODE" "$TITLE"
-          [ -n "$EVID" ] && { echo "EVIDENCE:"; printf "%s\n" "$EVID"; }
-          [ -n "$EXTRA" ] && { echo "NOTE: $EXTRA"; }
-          echo "::endgroup::"
-          printf '{"level":"%s","status":"%s","code":"%s","title":"%s"}\n' "$LEVEL" "$STATUS" "$CODE" "$TITLE" >> "${AUDIT_PART}"
-          EOS
-          chmod +x "$HOME/bin/audit_log"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          export AUDIT_PART="${RUNNER_TEMP}/audit-${GITHUB_JOB}.json"
-          echo "AUDIT_PART=$AUDIT_PART" >> "$GITHUB_ENV"
-          : > "$AUDIT_PART"
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: build
-
-      # C2 ⚪ M2 L2 — SBOM.subject.digest == artifact.digest
-      - name: Enforce SBOM subject digest equals artifact digest
-        id: sbchk
-        shell: bash
-        run: |
-          set -euo pipefail
-          ART_DIGEST=$(sha256sum artifact.txt | awk '{print $1}')
-          SBOM_DIGEST=$(jq -r '.files[]?|select(.fileName=="artifact.txt")|.checksums[]?|select(.algorithm=="SHA256")|.checksumValue' sbom.spdx.json | head -n1)
-          echo "artifact=${ART_DIGEST} sbom=${SBOM_DIGEST}"
-          if [ -z "$SBOM_DIGEST" ] || [ "$ART_DIGEST" != "$SBOM_DIGEST" ]; then
-            echo "::warning::SBOM digest mismatch or missing"
-            [ "${ENFORCEMENT}" = "block" ] && exit 1 || true
-          fi
-
-      - name: Log C2 ⚪ M2 L2 | SBOM-DIGEST
-        if: always()
-        shell: bash
-        run: |
-          audit_log L2 $([ "${{ steps.sbchk.outcome }}" = "success" ] && echo PASSED || echo WARN) \
-            "C2 ⚪ M2 L2 | DEPS.M2.SBOM-DIGEST" \
-            "SBOM.checksums[SHA256] совпадает с digest artifact.txt." \
-            "доп. доказательства: вывод шага + скрин — Artifacts → sbom.spdx.json"
-
-      - name: Upload audit part
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: audit-${{ github.job }}
-          path: ${{ env.AUDIT_PART }}
-
-  # ========================= C3 — Secrets: SM/KMS + минимальные perms =========================
+  # ---------------- Repo security flags (App) ----------------
   security_settings_guard:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup audit logger (per job)
+      - name: Configure AWS for GH App secret (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Fetch GH App key from AWS Secrets Manager (robust)
+        id: fetch_appkey
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/audit_log" <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          LEVEL="$1"; STATUS="$2"; CODE="$3"; TITLE="$4"; EVID="${5:-}"; EXTRA="${6:-}"
-          case "$LEVEL" in L1) ICON="🟩";; L2) ICON="🟦";; L3) ICON="🟪";; *) ICON="▫️";; esac
-          echo "::group::${ICON} ${CODE}"
-          printf "%s [%s] %s — %s\n" "$ICON" "$STATUS" "$CODE" "$TITLE"
-          [ -n "$EVID" ] && { echo "EVIDENCE:"; printf "%s\n" "$EVID"; }
-          [ -n "$EXTRA" ] && { echo "NOTE: $EXTRA"; }
-          echo "::endgroup::"
-          printf '{"level":"%s","status":"%s","code":"%s","title":"%s"}\n' "$LEVEL" "$STATUS" "$CODE" "$TITLE" >> "${AUDIT_PART}"
-          EOS
-          chmod +x "$HOME/bin/audit_log"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          export AUDIT_PART="${RUNNER_TEMP}/audit-${GITHUB_JOB}.json"
-          echo "AUDIT_PART=$AUDIT_PART" >> "$GITHUB_ENV"
-          : > "$AUDIT_PART"
+          umask 077
+          RAW="$(aws secretsmanager get-secret-value --secret-id ci/github/app-private-key --query SecretString --output text)"
+          if printf '%s' "$RAW" | head -n1 | grep -q -- '-----BEGIN '; then
+            printf '%s' "$RAW" > app.pem
+          else
+            VAL="$(printf '%s' "$RAW" | jq -r '.value // empty' || true)"
+            if [ -n "${VAL:-}" ] && printf '%s' "$VAL" | head -n1 | grep -q -- '-----BEGIN '; then
+              printf '%s' "$VAL" > app.pem
+            else
+              echo "::error::Secret is not a PEM. Store raw PEM or JSON {\"value\":\"PEM\"}."
+              exit 1
+            fi
+          fi
+          openssl pkey -in app.pem -noout >/dev/null 2>&1 || { echo "::error::Invalid PEM in app.pem"; exit 1; }
+          echo "app.pem ready"
 
-      # Проверка включенных GitHub Secret scanning + Push protection
-      - name: Check repo security flags via GH API
-        id: secflags
+      - name: Get GitHub App installation token (no external action)
+        id: app_token
         env:
-          GH_TOKEN: ${{ github.token }}
+          APP_ID: ${{ secrets.GHAPP_ID }}
+          API_URL: ${{ github.api_url }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          NOW=$(date +%s); EXP=$((NOW+540))
+          HDR=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+          PAY=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "$NOW" "$EXP" "$APP_ID" | b64url)
+          SIGN_INPUT="${HDR}.${PAY}"
+          SIG=$(printf %s "$SIGN_INPUT" | openssl dgst -sha256 -sign app.pem -binary | b64url)
+          JWT="${SIGN_INPUT}.${SIG}"
+          API="${API_URL:-https://api.github.com}"
+          INST_JSON=$(curl -fsSL -H "Authorization: Bearer ${JWT}" -H "Accept: application/vnd.github+json" \
+            "${API}/repos/${REPO}/installation")
+          INST_ID=$(jq -r '.id' <<<"$INST_JSON")
+          TOKEN_JSON=$(curl -fsSL -X POST -H "Authorization: Bearer ${JWT}" -H "Accept: application/vnd.github+json" \
+            "${API}/app/installations/${INST_ID}/access_tokens")
+          TOKEN=$(jq -r '.token' <<<"$TOKEN_JSON")
+          echo "GH_TOKEN=${TOKEN}" >> "$GITHUB_ENV"
+          shred -u app.pem || rm -f app.pem
+
+      - name: Check repo security flags
+        env:
+          GH_TOKEN: ${{ env.GH_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           DATA=$(gh api -H "Accept: application/vnd.github+json" repos/${{ github.repository }})
-          SS=$(echo "$DATA" | jq -r 'try .security_and_analysis.secret_scanning.status // empty')
-          PP=$(echo "$DATA" | jq -r 'try .security_and_analysis.secret_scanning_push_protection.status // empty')
-          echo "ss=$SS" >> "$GITHUB_OUTPUT"
-          echo "pp=$PP" >> "$GITHUB_OUTPUT"
-          [ "$SS" = "enabled" ] && [ "$PP" = "enabled" ] || { echo "::warning::Enable Secret scanning + Push Protection"; [ "${ENFORCEMENT}" = "block" ] && exit 1 || true; }
+          SEC=$(echo "$DATA" | jq -r '.security_and_analysis')
+          SS=$(echo "$SEC" | jq -r 'try .secret_scanning.status // empty')
+          PP=$(echo "$SEC" | jq -r 'try .secret_scanning_push_protection.status // empty')
+          echo "Secret scanning: ${SS:-unknown}, Push protection: ${PP:-unknown}"
+          if [ -z "${SS:-}" ] || [ -z "${PP:-}" ]; then
+            echo "::error::security_and_analysis недоступно. Проверь, что App установлен и фичи включены."
+            exit 1
+          fi
+          if [ "$SS" != "enabled" ] || [ "$PP" != "enabled" ]; then
+            echo "::error::Enable Secret scanning + Push Protection."
+            exit 1
+          fi
 
-      - name: Log C3 ⬜ M1 L1 | SRCS+LP
-        if: always()
+  # ---------------- KMS sign + verify ----------------
+  kms_sign_and_verify:
+    needs: [ build_and_attest, trust_store_guard ]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: build
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: KMS Sign artifact.txt (PS256)
+        run: |
+          set -euo pipefail
+          aws kms sign \
+            --key-id "${{ vars.AWS_KMS_KEY_ID }}" \
+            --signing-algorithm RSASSA_PSS_SHA_256 \
+            --message-type RAW \
+            --message fileb://artifact.txt \
+            --query Signature --output text | base64 -d > artifact.sig
+      - name: Fetch public key and verify with OpenSSL (PSS)
+        run: |
+          set -euo pipefail
+          aws kms get-public-key --key-id "${{ vars.AWS_KMS_KEY_ID }}" \
+            --query PublicKey --output text | base64 -d > aws-pub.der
+          openssl pkey -pubin -inform DER -in aws-pub.der -out aws-pub.pem
+          openssl dgst -sha256 \
+            -verify aws-pub.pem -signature artifact.sig \
+            -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:digest -sigopt rsa_mgf1_md:sha256 \
+            artifact.txt
+
+  # ---------------- SBOM Enforce ----------------
+  sbom_enforce:
+    needs: [ build_and_attest ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: build
+      - name: Enforce SBOM subject digest equals artifact digest
         shell: bash
         run: |
-          audit_log L1 $([ "${{ steps.secflags.outputs.ss }}" = "enabled" ] && [ "${{ steps.secflags.outputs.pp }}" = "enabled" ] && echo PASSED || echo WARN) \
-            "C3 ⬜ M1 L1 | SECRETS.M1.SRCS+LP" \
-            "Секреты только из SM/KMS; org repo: Secret scanning + Push Protection=enabled; permissions минимальны." \
-            "доп. доказательства: скрин — Repo → Code security and analysis; Repo → Actions → Workflow permissions"
+          set -euo pipefail
+          ART_DIGEST=$(sha256sum artifact.txt | awk '{print $1}')
+          SBOM_DIGEST=$(
+            jq -r '
+              .files[]? 
+              | select(.fileName=="artifact.txt") 
+              | .checksums[]? 
+              | select(.algorithm=="SHA256") 
+              | .checksumValue
+            ' sbom.spdx.json | head -n1
+          )
+          if [ -z "$SBOM_DIGEST" ] || [ "$ART_DIGEST" != "$SBOM_DIGEST" ]; then
+            echo "::warning::SBOM digest mismatch or missing (artifact=$ART_DIGEST, sbom=$SBOM_DIGEST)"
+            [ "${ENFORCEMENT}" = "block" ] && exit 1 || true
+          else
+            echo "SBOM digest matches."
+          fi
 
-      - name: Upload audit part
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: audit-${{ github.job }}
-          path: ${{ env.AUDIT_PART }}
-
-  # ========================= C7 — IaC scan (presence) =========================
+  # ---------------- IaC / Config scan ----------------
   iac_scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup audit logger (per job)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/audit_log" <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          LEVEL="$1"; STATUS="$2"; CODE="$3"; TITLE="$4"; EVID="${5:-}"; EXTRA="${6:-}"
-          case "$LEVEL" in L1) ICON="🟩";; L2) ICON="🟦";; L3) ICON="🟪";; *) ICON="▫️";; esac
-          echo "::group::${ICON} ${CODE}"
-          printf "%s [%s] %s — %s\n" "$ICON" "$STATUS" "$CODE" "$TITLE"
-          [ -n "$EVID" ] && { echo "EVIDENCE:"; printf "%s\n" "$EVID"; }
-          [ -n "$EXTRA" ] && { echo "NOTE: $EXTRA"; }
-          echo "::endgroup::"
-          printf '{"level":"%s","status":"%s","code":"%s","title":"%s"}\n' "$LEVEL" "$STATUS" "$CODE" "$TITLE" >> "${AUDIT_PART}"
-          EOS
-          chmod +x "$HOME/bin/audit_log"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          export AUDIT_PART="${RUNNER_TEMP}/audit-${GITHUB_JOB}.json"
-          echo "AUDIT_PART=$AUDIT_PART" >> "$GITHUB_ENV"
-          : > "$AUDIT_PART"
-
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
-      - name: Install trivy
-        shell: bash
+      - name: Install trivy (reliable)
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          set -euo pipefail
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
           trivy --version
-
-      - name: Run IaC/config scan (presence)
-        id: trv
-        shell: bash
+      - name: Run IaC/config scan (WARN)
         run: |
+          set -euo pipefail
           trivy config -q --exit-code 0 --format table .
-          echo "done" > "${RUNNER_TEMP}/iac.txt"
+          echo "IaC scan completed"
 
-      - name: Log C7 ⬜ M1 L1 | IAC-PRESENCE
-        if: always()
-        shell: bash
-        run: |
-          audit_log L1 $([ "${{ steps.trv.outcome }}" = "success" ] && echo PASSED || echo WARN) \
-            "C7 ⬜ M1 L1 | CONF.M1.IAC-PRESENCE" \
-            "Запущен IaC/config scan (Trivy)." \
-            "доп. доказательства: вывод шага Trivy"
-
-      - name: Upload audit part
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: audit-${{ github.job }}
-          path: ${{ env.AUDIT_PART }}
-
-  # ========================= Deploy gate (только main) =========================
+  # ---------------- Promote to Production ----------------
   promote_to_prod:
-    needs: [build_and_attest, security_settings_guard, kms_sign_and_verify, sbom_enforce, iac_scan, verify_action_publishers]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [ build_and_attest, security_settings_guard, kms_sign_and_verify, sbom_enforce, iac_scan, verify_action_publishers ]
+    if: ${{ (github.ref_name == 'main' || startsWith(github.ref_name, 'release/') || github.ref_name == 'fix/signed-commit') && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -720,27 +419,3 @@ jobs:
       cancel-in-progress: true
     steps:
       - run: echo "All upstream gates passed. Waiting for env approval…"
-
-  # ========================= SUMMARY =========================
-  audit_summary:
-    needs: [codeql, dependency_review, verify_action_publishers, build_and_attest, kms_sign_and_verify, trust_store_guard, sbom_enforce, security_settings_guard, iac_scan]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all audit parts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: audit-*
-          merge-multiple: true
-
-      - name: Render summary table
-        shell: bash
-        run: |
-          echo "::group::📊 SUMMARY"
-          jq -s 'flatten' audit-*.json > all.json
-          jq -r '
-            def pad(n): tostring | . + (" " * (n - length));
-            ( "STATUS  | CODE                         | TITLE",
-              "------- | ---------------------------- | -----" ),
-            ( .[] | "\(.status|pad(7)) | \(.code|pad(28)) | \(.title)" )
-          ' all.json
-          echo "::endgroup::"
